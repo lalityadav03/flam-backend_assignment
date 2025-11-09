@@ -104,19 +104,55 @@ class JobStorage:
             return None
     
     def get_next_pending_job(self) -> Optional[Job]:
-        """Get the next pending job (FIFO)."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM jobs 
-                WHERE state = ? 
-                ORDER BY created_at ASC 
-                LIMIT 1
-            """, (JobState.PENDING.value,))
-            row = cursor.fetchone()
-            if row:
-                return self._row_to_job(row)
-            return None
+        """Get the next pending job (FIFO) and atomically mark it as processing."""
+        from utils import current_timestamp
+        # Use a separate connection with immediate locking to prevent race conditions
+        conn = sqlite3.connect(str(self.db_file), timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        conn.isolation_level = None  # Manual transaction control
+        cursor = conn.cursor()
+        try:
+            # Begin immediate transaction (acquires write lock)
+            cursor.execute("BEGIN IMMEDIATE")
+            try:
+                # Get the first pending job ID
+                cursor.execute("""
+                    SELECT id FROM jobs 
+                    WHERE state = ? 
+                    ORDER BY created_at ASC 
+                    LIMIT 1
+                """, (JobState.PENDING.value,))
+                row = cursor.fetchone()
+                if row:
+                    job_id = row["id"]
+                    # Atomically update to processing (only if still pending)
+                    cursor.execute("""
+                        UPDATE jobs 
+                        SET state = ?, updated_at = ?
+                        WHERE id = ? AND state = ?
+                    """, (JobState.PROCESSING.value, current_timestamp(), 
+                          job_id, JobState.PENDING.value))
+                    # Check if update was successful (prevents race conditions)
+                    if cursor.rowcount > 0:
+                        cursor.execute("COMMIT")
+                        # Fetch the full job record
+                        cursor.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+                        updated_row = cursor.fetchone()
+                        if updated_row:
+                            job = self._row_to_job(updated_row)
+                            return job
+                    else:
+                        # Another worker got this job first
+                        cursor.execute("ROLLBACK")
+                        return None
+                else:
+                    cursor.execute("COMMIT")
+                return None
+            except Exception:
+                cursor.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
     
     def update_job_state(self, job_id: str, new_state: JobState, 
                         error_message: Optional[str] = None) -> None:

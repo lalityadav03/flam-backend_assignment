@@ -3,9 +3,7 @@
 import subprocess
 import threading
 import time
-import signal
-import sys
-from typing import Optional
+from typing import Optional, List
 from job import Job, JobState
 from storage import JobStorage
 from config import ConfigManager
@@ -99,9 +97,7 @@ class Worker(threading.Thread):
     
     def process_job(self, job: Job) -> None:
         """Process a single job."""
-        # Mark as processing
-        self.storage.update_job_state(job.id, JobState.PROCESSING)
-        
+        # Job is already marked as processing by get_next_pending_job
         try:
             # Execute command
             result = subprocess.run(

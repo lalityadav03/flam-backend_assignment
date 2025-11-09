@@ -1,7 +1,6 @@
 """Utility functions for queuectl."""
 
 import uuid
-import time
 from datetime import datetime
 from typing import List, Dict, Any
 from tabulate import tabulate
